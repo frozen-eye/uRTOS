@@ -58,7 +58,7 @@ static void wake_sleeping_tasks(void)
 
     for (size_t i = 0; i < task_count; i++) {
         os_task_t *t = task_list[i];
-        if (t->state == OS_TASK_BLOCKED && now >= t->wake_tick) {
+        if (t->state == OS_TASK_BLOCKED && t->wake_tick != 0U && now >= t->wake_tick) {
             t->state = OS_TASK_READY;
             t->run_cpu = -1;
         }
@@ -116,6 +116,7 @@ os_task_t *os_task_create(const char *name, os_task_fn_t fn, uint8_t *stack, voi
     task->priority = clamp_priority(priority);
     task->aff_cpu = -1;
     task->run_cpu = -1;
+    task->wait_next = NULL;
 
     task_list[task_count++] = task;
     os_task_init_context(task);
@@ -153,8 +154,27 @@ void os_task_bind(os_task_t *task, uint32_t cpu_id)
     os_spinlock_release(&os_sched_lock);
 }
 
+static int task_live_on_other_cpu(const os_task_t *t, uint32_t cpu_id)
+{
+#if OS_CPU_COUNT > 1
+    for (uint32_t i = 0; i < OS_CPU_COUNT; i++) {
+        if (i != cpu_id && os_cpus[i].current == t) {
+            return 1;
+        }
+    }
+#else
+    (void)t;
+    (void)cpu_id;
+#endif
+    return 0;
+}
+
 static int task_eligible(const os_task_t *t, uint32_t cpu_id, int steal)
 {
+    if (task_live_on_other_cpu(t, cpu_id)) {
+        return 0;
+    }
+
     if (t->aff_cpu >= 0 && (uint32_t)t->aff_cpu != cpu_id) {
         return 0;
     }

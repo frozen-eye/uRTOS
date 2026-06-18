@@ -27,7 +27,10 @@ typedef struct os_task {
     uint8_t         priority;
     int8_t          aff_cpu;
     int8_t          run_cpu;
+    struct os_task  *wait_next;
 } os_task_t;
+
+#include "os_sync.h"
 
 void os_kernel_init(void);
 void os_kernel_start(void) __attribute__((noreturn));

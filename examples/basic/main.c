@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+static os_mutex_t counter_mu;
+static os_sem_t   tick_sem;
+static uint32_t   shared_count;
+
 static int snprintf_uint(char *buf, size_t cap, uint32_t v)
 {
     char tmp[12];
@@ -51,6 +55,18 @@ static void print_ms(void)
     port_uart_puts(buf);
 }
 
+static void print_count(uint32_t count)
+{
+    char buf[16];
+    int pos = 0;
+
+    port_uart_puts("count=");
+    pos += snprintf_uint(buf + pos, sizeof(buf) - (size_t)pos, count);
+    buf[pos] = '\0';
+    port_uart_puts(buf);
+    port_uart_puts("\n");
+}
+
 static void task_a(void *arg)
 {
     (void)arg;
@@ -71,19 +87,36 @@ static void task_b(void *arg)
     }
 }
 
-static void task_c(void *arg)
+static void task_producer(void *arg)
 {
     (void)arg;
-    /* CPU-bound loop — never calls os_yield(); preemption must come from the timer IRQ. */
-    volatile uint64_t spin = 0;
     for (;;) {
-        spin++;
+        os_task_delay(400);
+        os_sem_post(&tick_sem);
+    }
+}
+
+static void task_consumer(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        os_sem_wait(&tick_sem);
+
+        os_mutex_lock(&counter_mu);
+        shared_count++;
+        print_ms();
+        print_count(shared_count);
+        os_mutex_unlock(&counter_mu);
     }
 }
 
 void app_main(void)
 {
+    os_mutex_init(&counter_mu);
+    os_sem_init(&tick_sem, 0U);
+
     os_task_create("A", task_a, NULL, NULL, OS_TASK_PRIO_NORMAL);
     os_task_create("B", task_b, NULL, NULL, OS_TASK_PRIO_HIGH);
-    os_task_create("C", task_c, NULL, NULL, OS_TASK_PRIO_LOW);
+    os_task_create("prod", task_producer, NULL, NULL, OS_TASK_PRIO_NORMAL);
+    os_task_create("cons", task_consumer, NULL, NULL, OS_TASK_PRIO_HIGH);
 }

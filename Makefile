@@ -16,6 +16,7 @@ COMMON_SRCS := \
 	kernel/panic.c \
 	kernel/heap.c \
 	kernel/spinlock.c \
+	kernel/sync.c \
 	kernel/smp.c \
 	kernel/scheduler.c \
 	examples/basic/main.c

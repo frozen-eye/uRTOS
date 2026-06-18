@@ -1,15 +1,17 @@
 # uRTOS
 
-A small educational RTOS with **preemptive scheduling** for bare-metal QEMU `virt` machines.
+A small educational RTOS with **preemptive, priority-aware scheduling** and **SMP** (on ARM) for bare-metal QEMU `virt` machines.
 
 Supported targets:
 
-| Port | Architecture | QEMU machine | Toolchain |
-|------|--------------|--------------|-----------|
-| `aarch64` (default) | ARM 64-bit | `qemu-system-aarch64 -M virt` | `aarch64-linux-gnu-gcc` |
-| `armhf` | ARM 32-bit hard-float | `qemu-system-arm -M virt` | `arm-linux-gnueabihf-gcc` |
-| `riscv64` | RISC-V 64-bit | `qemu-system-riscv64 -M virt` | `riscv64-linux-gnu-gcc` |
-| `riscv32` | RISC-V 32-bit | `qemu-system-riscv32 -M virt` | `riscv32-linux-gnu-gcc` |
+| Port | Architecture | QEMU machine | SMP |
+|------|--------------|--------------|-----|
+| `aarch64` (default) | ARM 64-bit | `qemu-system-aarch64 -M virt -smp 2` | yes (2 CPUs) |
+| `armhf` | ARM 32-bit hard-float | `qemu-system-arm -M virt -smp 2` | yes (2 CPUs) |
+| `riscv64` | RISC-V 64-bit | `qemu-system-riscv64 -M virt` | no |
+| `riscv32` | RISC-V 32-bit | `qemu-system-riscv32 -M virt` | no |
+
+Toolchains: `aarch64-linux-gnu-gcc`, `arm-linux-gnueabihf-gcc`, `riscv64-linux-gnu-gcc`, `riscv32-linux-gnu-gcc`.
 
 ## Repository
 
@@ -68,6 +70,7 @@ make run-riscv32
 qemu-system-aarch64 \
   -M virt,gic-version=2 \
   -cpu cortex-a53 \
+  -smp 2 \
   -nographic \
   -serial mon:stdio \
   -kernel build/kernel.elf
@@ -79,6 +82,7 @@ qemu-system-aarch64 \
 qemu-system-arm \
   -M virt,highmem=off \
   -cpu cortex-a15 \
+  -smp 2 \
   -nographic \
   -serial mon:stdio \
   -kernel build/kernel.elf
@@ -106,7 +110,7 @@ qemu-system-riscv32 \
   -kernel build/kernel.elf
 ```
 
-## What works today (v0.4)
+## What works today (v0.6)
 
 - Bare-metal boot on all four QEMU `virt` ports
 - **No MMU**, no Linux, no U-Boot
@@ -120,7 +124,8 @@ qemu-system-riscv32 \
   - Spinlock-protected global scheduler with **work-stealing**
   - GIC SGI IPI for cross-CPU reschedule
   - Timer tick on CPU0 only; secondaries boot via PSCI `CPU_ON`
-  - Optional `os_task_bind()` to pin a task to a specific core
+  - `os_task_bind()` to pin a task to a specific core
+  - Mutexes and counting semaphores (`os_mutex_*`, `os_sem_*`)
   - `os_cpu_id()` in task output
 - Timer-driven preemption:
   - **aarch64** — ARM Generic Timer + GICv2 (IRQ 30)
@@ -145,32 +150,56 @@ os_task_create("sensor", sensor_task, NULL, NULL, OS_TASK_PRIO_HIGH);
 os_task_set_priority(task, OS_TASK_PRIO_REALTIME);
 ```
 
+## Mutexes and semaphores
+
+Blocking synchronization with per-object wait queues. Tasks block in `OS_TASK_BLOCKED` and are woken on `unlock` / `post`. Mutexes support **direct handoff** to the next waiter; semaphores are counting.
+
+```c
+os_mutex_t mu;
+os_sem_t   sem;
+
+os_mutex_init(&mu);
+os_sem_init(&sem, 0);
+
+os_mutex_lock(&mu);
+os_mutex_unlock(&mu);
+
+if (os_mutex_trylock(&mu) == 0) { /* acquired */ }
+
+os_sem_wait(&sem);
+os_sem_post(&sem);
+```
+
+Return value for `try` variants: `0` on success, `-1` if the call would block. Unlocking a mutex not owned by the current task panics.
+
 ## Work-stealing (SMP)
 
 When a CPU finds no locally runnable task, the scheduler performs a steal pass: it picks a `READY` task currently attributed to another CPU (`run_cpu`), respecting `aff_cpu` affinity. The previous owner is cleared and notified via IPI. This lets idle cores pull delayed tasks while a CPU-bound task spins elsewhere.
 
 ## Demo output
 
-The basic example runs three tasks:
+The basic example runs four tasks:
 
 - **Task A** — normal priority, prints every 1000 ms
 - **Task B** — high priority, prints every 500 ms
-- **Task C** — low priority, busy-spins (preempted by higher-priority work)
+- **prod / cons** — semaphore + mutex; producer posts every 400 ms, consumer increments a shared counter
 
 Expected pattern (banner string varies by port):
 
 ```text
 uRTOS/qemu-aarch64 boot
-[kernel] scheduler started
+[kernel] scheduler started (SMP)
 [tick] timer frequency: XXXXXXXX Hz
-[0 ms cpu0] task A: alive
-[0 ms cpu1] task B: alive
+[0 ms cpu0] task B: alive
 [500 ms cpu0] task B: alive
-[500 ms cpu1] task A: alive
-[1000 ms cpu0] task A: alive
-[1000 ms cpu1] task B: alive
+[1000 ms cpu0] task B: alive
+[1000 ms cpu1] task A: alive
+[400 ms cpu0] count=1
+[800 ms cpu1] count=2
 ...
 ```
+
+Task B (high priority) prints about twice as often as task A (normal). Exact CPU assignment varies with SMP scheduling and work-stealing.
 
 ## Project layout
 
@@ -178,7 +207,7 @@ uRTOS/qemu-aarch64 boot
 Makefile
 LICENSE
 include/                    Public headers and os_config.h
-kernel/                     Scheduler, panic
+kernel/                     Scheduler, heap, sync, SMP, spinlock, panic
 boards/common/              Shared boot entry
 boards/qemu-virt-aarch64/   AArch64 linker script
 boards/qemu-virt-armhf/     ARM32 linker script
@@ -194,20 +223,21 @@ examples/basic/             Preemption demo
 ## Current limitations
 
 - No MMU, MPU, or user/supervisor separation
-- No mutexes, queues, or dynamic allocation
-- Round-robin only (no priorities)
+- No priority inheritance; mutex/semaphore wait queues are FIFO
+- Bump-heap allocator only (`os_mem_alloc` / `os_mem_free`); no `free()` coalescing
+- Fixed-priority preemptive scheduler
 - Context switch from IRQ/trap context directly (no deferred scheduler call)
+- **SMP** on **aarch64 / armhf** only (`OS_CPU_COUNT=2`); RISC-V ports are unicore
 - **aarch64 / armhf**: GICv2 only (`gic-version=2` on AArch64 QEMU)
 - **riscv64 / riscv32**: M-mode only (no S-mode / SBI)
-- Single-core only
 - Minimal fault diagnostics (panic string only)
 - `os_task_delay()` resolution is one tick (1 ms at 1000 Hz)
 
 ## TODO
 
-- Symmetric multi-processing (SMP) across cores
 - GICv3 support for newer QEMU defaults
 - RISC-V S-mode port with SBI timer
+- SMP on RISC-V (`-smp` + IPI)
 - Deferred scheduler call from IRQ (reduce interrupt latency)
-- Task priorities and synchronization primitives
+- Message queues and event groups
 - Better fault reporting (ESR / mcause / mtval dump)
