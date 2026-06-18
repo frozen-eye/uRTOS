@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# build/
+build/
+
+# object files
+*.o
+
+# executable files
+*.elf
+
+# debug files
+*.d
+*.o.d
