@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "port.h"
 #include "gic.h"
+#include "smp.h"
 
 void os_irq_handler(void)
 {
@@ -11,8 +12,12 @@ void os_irq_handler(void)
     }
 
     if (irq == (uint32_t)IRQ_VIRT_TIMER) {
-        os_tick_handler();
-        port_timer_reprogram();
+        if (port_cpu_id() == 0U) {
+            os_tick_handler();
+            port_timer_reprogram();
+        }
+    } else if (irq == (uint32_t)IRQ_SGI_RESCHEDULE) {
+        os_schedule();
     }
 
     port_gic_eoi(irq);

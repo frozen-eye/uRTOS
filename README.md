@@ -106,17 +106,25 @@ qemu-system-riscv32 \
   -kernel build/kernel.elf
 ```
 
-## What works today (v0.3)
+## What works today (v0.4)
 
-- Bare-metal boot on all three QEMU `virt` ports
+- Bare-metal boot on all four QEMU `virt` ports
 - **No MMU**, no Linux, no U-Boot
 - PL011 UART (ARM) or NS16550 UART (RISC-V)
-- Static task stacks (no heap)
-- Round-robin preemptive scheduler
+- Dynamic task stacks and TCBs via bump heap (`os_mem_alloc`)
+- Round-robin among **equal-priority** ready tasks; higher numeric priority preempts lower
 - Cooperative `os_yield()`
 - `os_task_delay()` using the kernel tick (`OS_TICK_HZ` = 1000)
+- **SMP on aarch64 and armhf** (`OS_CPU_COUNT=2`, QEMU `-smp 2`):
+  - Per-CPU state via `os_cpus[]` and `TPIDR_EL1` / `TPIDRPRW`
+  - Spinlock-protected global scheduler with **work-stealing**
+  - GIC SGI IPI for cross-CPU reschedule
+  - Timer tick on CPU0 only; secondaries boot via PSCI `CPU_ON`
+  - Optional `os_task_bind()` to pin a task to a specific core
+  - `os_cpu_id()` in task output
 - Timer-driven preemption:
-  - **aarch64 / armhf** — ARM Generic Timer + GICv2 (IRQ 30)
+  - **aarch64** — ARM Generic Timer + GICv2 (IRQ 30)
+  - **armhf** — ARM Generic Timer + GIC (IRQ 27)
   - **riscv64 / riscv32** — CLINT machine timer (`mtime` / `mtimecmp`)
 - Exception/trap vectors with panic on unexpected faults
 
@@ -125,16 +133,29 @@ qemu-system-riscv32 \
 1. Boot code installs the CPU exception/trap vector table and initializes the platform timer and interrupt controller.
 2. When the tick timer fires, the **IRQ/trap handler** saves the full register frame of the interrupted task, switches to a dedicated IRQ stack, and calls `os_irq_handler()`.
 3. The handler calls `os_tick_handler()` (increments tick, wakes delayed tasks, runs the scheduler), reprograms the timer, and completes interrupt processing.
-4. If the scheduler picks a different task, `os_current_task` is updated; handler exit restores the **new** task's frame and returns into it.
+4. If the scheduler picks a different task, the per-CPU `current` pointer is updated; handler exit restores the **new** task's frame and returns into it.
 5. A CPU-bound task that never calls `os_yield()` is still preempted every tick.
+
+## Task priorities
+
+Priorities range from `OS_TASK_PRIO_MIN` (0) to `OS_TASK_PRIO_MAX` (7); **higher number = higher priority**. Pass the priority to `os_task_create()`, or change it later with `os_task_set_priority()`. Among ready tasks with the same priority the scheduler still round-robins.
+
+```c
+os_task_create("sensor", sensor_task, NULL, NULL, OS_TASK_PRIO_HIGH);
+os_task_set_priority(task, OS_TASK_PRIO_REALTIME);
+```
+
+## Work-stealing (SMP)
+
+When a CPU finds no locally runnable task, the scheduler performs a steal pass: it picks a `READY` task currently attributed to another CPU (`run_cpu`), respecting `aff_cpu` affinity. The previous owner is cleared and notified via IPI. This lets idle cores pull delayed tasks while a CPU-bound task spins elsewhere.
 
 ## Demo output
 
 The basic example runs three tasks:
 
-- **Task A** — prints every 1000 ms
-- **Task B** — prints every 500 ms
-- **Task C** — busy-spins without yielding (proves preemption)
+- **Task A** — normal priority, prints every 1000 ms
+- **Task B** — high priority, prints every 500 ms
+- **Task C** — low priority, busy-spins (preempted by higher-priority work)
 
 Expected pattern (banner string varies by port):
 
@@ -142,11 +163,12 @@ Expected pattern (banner string varies by port):
 uRTOS/qemu-aarch64 boot
 [kernel] scheduler started
 [tick] timer frequency: XXXXXXXX Hz
-[0 ms] task A: alive
-[0 ms] task B: alive
-[500 ms] task B: alive
-[1000 ms] task A: alive
-[1000 ms] task B: alive
+[0 ms cpu0] task A: alive
+[0 ms cpu1] task B: alive
+[500 ms cpu0] task B: alive
+[500 ms cpu1] task A: alive
+[1000 ms cpu0] task A: alive
+[1000 ms cpu1] task B: alive
 ...
 ```
 

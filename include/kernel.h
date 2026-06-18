@@ -3,8 +3,6 @@
 
 #include "os.h"
 
-extern os_task_t *os_current_task;
-extern os_task_t *os_next_task;
 extern volatile uint64_t os_tick_count;
 extern volatile int os_reschedule_pending;
 

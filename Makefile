@@ -15,6 +15,8 @@ COMMON_SRCS := \
 	boards/common/boot.c \
 	kernel/panic.c \
 	kernel/heap.c \
+	kernel/spinlock.c \
+	kernel/smp.c \
 	kernel/scheduler.c \
 	examples/basic/main.c
 
@@ -25,19 +27,19 @@ ifeq ($(PORT),aarch64)
   ARCH_DIR      := port/aarch64-qemu-virt
   BOARD_DIR     := boards/qemu-virt-aarch64
   QEMU          := qemu-system-aarch64
-  QEMU_FLAGS    := -M virt,gic-version=2 -cpu cortex-a53 -nographic -serial mon:stdio
-  ARCH_CFLAGS   := -mgeneral-regs-only
+  QEMU_FLAGS    := -M virt,gic-version=2 -cpu cortex-a53 -smp 2 -nographic -serial mon:stdio
+  ARCH_CFLAGS   := -mgeneral-regs-only -DOS_CPU_COUNT=2
   ASM_SRCS      := $(ARCH_DIR)/start.S $(ARCH_DIR)/vectors.S $(ARCH_DIR)/context_switch.S
-  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/gic.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c
+  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/gic.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c $(ARCH_DIR)/smp.c
 else ifeq ($(PORT),armhf)
   CROSS_COMPILE ?= arm-linux-gnueabihf-
   ARCH_DIR      := port/armhf-qemu-virt
   BOARD_DIR     := boards/qemu-virt-armhf
   QEMU          := qemu-system-arm
-  QEMU_FLAGS    := -M virt,highmem=off -cpu cortex-a15 -nographic -serial mon:stdio
-  ARCH_CFLAGS   := -march=armv7-a -mfpu=vfpv3 -mfloat-abi=hard
+  QEMU_FLAGS    := -M virt,highmem=off -cpu cortex-a15 -smp 2 -nographic -serial mon:stdio
+  ARCH_CFLAGS   := -march=armv7-a -mfpu=vfpv3 -mfloat-abi=hard -DOS_CPU_COUNT=2
   ASM_SRCS      := $(ARCH_DIR)/start.S $(ARCH_DIR)/vectors.S $(ARCH_DIR)/context_switch.S
-  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/gic.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c
+  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/gic.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c $(ARCH_DIR)/smp.c
 else ifeq ($(PORT),riscv64)
   CROSS_COMPILE ?= riscv64-linux-gnu-
   ARCH_DIR      := port/riscv64-qemu-virt
@@ -46,7 +48,7 @@ else ifeq ($(PORT),riscv64)
   QEMU_FLAGS    := -M virt -cpu rv64 -nographic -serial mon:stdio
   ARCH_CFLAGS   := -march=rv64imac -mabi=lp64 -mcmodel=medany
   ASM_SRCS      := $(ARCH_DIR)/start.S $(ARCH_DIR)/trap.S $(ARCH_DIR)/context_switch.S
-  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c
+  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c $(ARCH_DIR)/smp.c
 else ifeq ($(PORT),riscv32)
   CROSS_COMPILE ?= riscv32-linux-gnu-
   ARCH_DIR      := port/riscv32-qemu-virt
@@ -55,7 +57,7 @@ else ifeq ($(PORT),riscv32)
   QEMU_FLAGS    := -M virt -cpu rv32 -nographic -serial mon:stdio
   ARCH_CFLAGS   := -march=rv32imac -mabi=ilp32 -mcmodel=medany
   ASM_SRCS      := $(ARCH_DIR)/start.S $(ARCH_DIR)/trap.S $(ARCH_DIR)/context_switch.S
-  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c
+  PORT_SRCS     := $(ARCH_DIR)/uart.c $(ARCH_DIR)/timer.c $(ARCH_DIR)/irq.c $(ARCH_DIR)/smp.c
 else
   $(error Unsupported PORT=$(PORT). Use aarch64, armhf, riscv64, or riscv32)
 endif
@@ -65,7 +67,7 @@ AS      := $(CROSS_COMPILE)gcc
 
 CFLAGS  := -ffreestanding -nostdlib -nostartfiles \
            -Wall -Wextra -O2 -g \
-           -Iinclude -I$(ARCH_DIR) \
+           -Iinclude -Ikernel -I$(ARCH_DIR) \
            $(ARCH_CFLAGS)
 
 ASFLAGS := $(CFLAGS)

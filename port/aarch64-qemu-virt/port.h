@@ -20,4 +20,10 @@ void port_uart_init(void);
 void port_uart_putc(char c);
 void port_uart_puts(const char *s);
 
+uint32_t port_cpu_id(void);
+void port_cpu_init(uint32_t cpu_id);
+void port_wfe(void);
+void port_smp_boot_secondaries(void);
+void port_smp_send_reschedule_ipi(void);
+
 #endif /* PORT_H */
